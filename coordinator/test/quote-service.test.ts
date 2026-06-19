@@ -48,7 +48,9 @@ describe("QuoteService — SWR caching", () => {
   let fetchMock: MockInstance;
 
   beforeEach(() => {
-    vi.useFakeTimers();
+    // Only fake Date-related timers. Avoid faking setTimeout/clearTimeout
+    // globally so AbortController and fetch internals are not disrupted.
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     fetchMock = vi.spyOn(globalThis, "fetch");
   });
 
@@ -229,10 +231,12 @@ describe("QuoteService — SWR caching", () => {
     // Initial live fetch: resolves immediately.
     fetchMock.mockResolvedValueOnce(mockCoinGeckoResponse(3000, 0.10));
 
-    // Background refresh: a deferred promise that we never resolve during
-    // this test — if the code accidentally awaits it the test would hang.
-    const neverResolves = new Promise<Response>(() => { /* intentionally pending */ });
-    fetchMock.mockReturnValueOnce(neverResolves);
+    // Background refresh: resolves only after the test completes.
+    // We use a deferred that we resolve in cleanup to avoid vitest
+    // detecting an unresolved promise on teardown.
+    let resolveBackground!: (r: Response) => void;
+    const backgroundPending = new Promise<Response>((res) => { resolveBackground = res; });
+    fetchMock.mockReturnValueOnce(backgroundPending);
 
     const svc = new QuoteService(NOOP_LOGGER, { freshTtlMs: 5_000, staleTtlMs: 30_000, maxStaleTtlMs: 300_000 });
 
@@ -249,6 +253,11 @@ describe("QuoteService — SWR caching", () => {
     expect(snap.staleness).toBe("stale");
     // fetch was called twice: initial + background refresh kick-off.
     expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // Resolve the background promise so vitest teardown doesn't see a
+    // dangling pending promise.
+    resolveBackground(mockCoinGeckoResponse(3000, 0.10));
+    await backgroundPending;
   });
 
   // ── quoteEthXlm convenience method ────────────────────────────────────────

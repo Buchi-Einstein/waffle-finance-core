@@ -274,10 +274,21 @@ export class QuoteService {
   private async _fetchFromUpstream(pair: string): Promise<CacheEntry> {
     const ids = this._geckoIds(pair);
 
-    const res = await fetch(
-      `https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd`,
-      { signal: AbortSignal.timeout(8_000) }
-    );
+    // Use Promise.race for the timeout so fake timers in tests don't
+    // interfere with AbortSignal.timeout's internal timer mechanism.
+    const TIMEOUT_MS = 8_000;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+    let res: Response;
+    try {
+      res = await fetch(
+        `https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd`,
+        { signal: controller.signal }
+      );
+    } finally {
+      clearTimeout(timer);
+    }
 
     if (!res.ok) {
       throw new Error(`CoinGecko returned HTTP ${res.status}`);

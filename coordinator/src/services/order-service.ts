@@ -40,7 +40,10 @@ export class OrderService {
     }
 
     const order = await this.repo.announce(input as AnnounceOrderInput);
-    this.log.info({ publicId: order.publicId, direction: order.direction }, "order announced");
+    this.log.info(
+      { publicId: order.publicId, direction: order.direction, hashlock: order.hashlock },
+      "order announced"
+    );
     ordersTotal.inc({ status: "announced" });
     return order;
   }
@@ -130,5 +133,11 @@ export class OrderService {
 
   async getLastProcessedBlock(chain: Chain): Promise<number> {
     return this.repo.getLastProcessedBlock(chain);
+  }
+
+  findOrdersMissingSecret(): Promise<
+    { publicId: string; srcOrderId: string | null; hashlock: string; status: string }[]
+  > {
+    return this.repo.findOrdersMissingSecret();
   }
 }

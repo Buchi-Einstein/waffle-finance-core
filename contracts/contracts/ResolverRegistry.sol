@@ -91,7 +91,7 @@ contract ResolverRegistry is IResolverRegistry, Ownable2Step, ReentrancyGuard {
     event Registered(address indexed resolver, uint256 stake);
     event StakeIncreased(address indexed resolver, uint256 added, uint256 newTotal);
     event Unregistered(address indexed resolver, uint256 stakeReturned);
-    event Slashed(address indexed resolver, uint256 amount, address beneficiary);
+    event Slashed(address indexed resolver, uint256 amount, address indexed beneficiary);
     event MinStakeUpdated(uint256 oldMinStake, uint256 newMinStake);
     event SlashBeneficiaryUpdated(address oldBeneficiary, address newBeneficiary);
 
@@ -197,7 +197,12 @@ contract ResolverRegistry is IResolverRegistry, Ownable2Step, ReentrancyGuard {
     /// @notice Withdraw the entire stake and remove the resolver.  The
     ///         caller forfeits their `active` status immediately.
     ///
-    /// @dev Strict CEI order is critical here.  All state mutations —
+    /// @dev Access control: self-service — only a registered resolver can call
+    ///      this for themselves (`msg.sender` is used as the key throughout).
+    ///      There is no owner function to forcibly unregister a resolver; the
+    ///      owner can only slash their stake, not eject them.
+    ///
+    ///      Strict CEI order is critical here.  All state mutations —
     ///      clearing _resolvers, removing from _resolverList, and deleting
     ///      _resolverIndex — are committed BEFORE the outgoing safeTransfer.
     ///      This means:
@@ -248,14 +253,24 @@ contract ResolverRegistry is IResolverRegistry, Ownable2Step, ReentrancyGuard {
     ///         that can call this; the design intent is that `owner` is
     ///         a DAO or multisig that votes on slashing.
     ///
-    /// @dev Slashing does NOT remove the resolver from the list.  The
+    /// @dev Access control: `onlyOwner` — only the DAO/multisig that controls
+    ///      this registry. The owner CANNOT move funds out of `HTLCEscrow`;
+    ///      the HTLC and registry are separate contracts. A registry compromise
+    ///      therefore cannot steal user funds — at worst it can deactivate
+    ///      resolvers, which only delays new order creation.
+    ///
+    ///      Slashing does NOT remove the resolver from the list. The
     ///      resolver remains registered (their address is in _resolverList
     ///      and _resolverIndex is non-zero) but `active` flips to false if
-    ///      their remaining stake falls below `minStake`.  The resolver can
+    ///      their remaining stake falls below `minStake`. The resolver can
     ///      call `increaseStake` to top up and regain active status.
     ///
     ///      CEI is observed: stake accounting and active-flag update happen
     ///      before the outgoing safeTransfer to slashBeneficiary.
+    ///
+    ///      Invariants maintained: I1–I5 are unchanged (slash only mutates
+    ///      `_resolvers[resolver]`; it does not touch _resolverList or
+    ///      _resolverIndex).
     function slash(address resolver, uint256 amount) external onlyOwner nonReentrant {
         if (amount == 0) revert InvalidAmount();
         if (_resolverIndex[resolver] == 0) revert NotRegistered();
@@ -324,6 +339,62 @@ contract ResolverRegistry is IResolverRegistry, Ownable2Step, ReentrancyGuard {
     /// @notice Alias kept for backwards compatibility.
     function listLength() external view returns (uint256) {
         return _resolverList.length;
+    }
+
+    /// @notice Return full ResolverInfo for every currently-active resolver.
+    ///         A resolver is active when its `active` flag is true AND its
+    ///         stake meets or exceeds the current `minStake`, matching the
+    ///         logic used by `isActive`.
+    ///
+    /// @dev    Off-chain view helper. Iterates the full resolver list in
+    ///         memory — avoid calling on-chain in a gas-limited context.
+    ///         Coordinators and monitoring tools use this for a single-call
+    ///         snapshot instead of N individual `get()` calls.
+    ///
+    ///         The returned array may be shorter than `getResolverCount()` if
+    ///         some registered resolvers are currently inactive due to slashing
+    ///         or a `minStake` increase.
+    function getActiveResolvers() external view returns (ResolverInfo[] memory) {
+        uint256 len = _resolverList.length;
+        uint256 snap = minStake; // cache to avoid repeated SLOADs
+        uint256 activeCount = 0;
+
+        for (uint256 i = 0; i < len; i++) {
+            ResolverInfo storage info = _resolvers[_resolverList[i]];
+            if (info.active && info.stake >= snap) {
+                activeCount++;
+            }
+        }
+
+        ResolverInfo[] memory result = new ResolverInfo[](activeCount);
+        uint256 j = 0;
+        for (uint256 i = 0; i < len; i++) {
+            ResolverInfo storage info = _resolvers[_resolverList[i]];
+            if (info.active && info.stake >= snap) {
+                result[j++] = info;
+            }
+        }
+        return result;
+    }
+
+    /// @notice Return ResolverInfo for each address in `resolvers`.
+    ///         Unregistered addresses return a zero-value struct (all fields
+    ///         are zero / false / address(0)), matching the behaviour of
+    ///         `get()` for unknown addresses.
+    ///
+    /// @dev    Lets coordinators and front-ends fetch info for a known set of
+    ///         resolver addresses in a single RPC call instead of N individual
+    ///         `get()` calls.  Safe to call with an empty array.
+    function getBatchInfo(address[] calldata resolvers)
+        external
+        view
+        returns (ResolverInfo[] memory)
+    {
+        ResolverInfo[] memory result = new ResolverInfo[](resolvers.length);
+        for (uint256 i = 0; i < resolvers.length; i++) {
+            result[i] = _resolvers[resolvers[i]];
+        }
+        return result;
     }
 
     // ---------------------------------------------------------------

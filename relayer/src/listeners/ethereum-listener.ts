@@ -270,7 +270,7 @@ export class EthereumEventListener {
       await this.processCrossChainOrder(crossChainOrder);
 
     } catch (error) {
-      console.error('❌ Error handling OrderCreated event:', error);
+      console.error('❌ Error handling OrderCreated event:', sanitizeForLog(error));
     }
   }
 

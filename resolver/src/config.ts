@@ -27,6 +27,13 @@ export interface ResolverConfig {
   pollIntervalMs: number;
   coordinatorUrl: string;
   logLevel: "trace" | "debug" | "info" | "warn" | "error";
+  /** Retry settings for RPC calls */
+  rpc: {
+    maxRetries: number;
+    baseDelayMs: number;
+    maxDelayMs: number;
+    timeoutMs: number;
+  };
   ethereum: EthereumConfig;
   soroban: SorobanConfig;
 }
@@ -80,6 +87,12 @@ export function loadConfig(): ResolverConfig {
     pollIntervalMs: Number(process.env.RESOLVER_POLL_INTERVAL_MS ?? 15_000),
     coordinatorUrl: process.env.COORDINATOR_URL ?? "http://localhost:3001",
     logLevel: (process.env.LOG_LEVEL as ResolverConfig["logLevel"]) ?? "info",
+    rpc: {
+      maxRetries: Number(process.env.RESOLVER_RPC_MAX_RETRIES ?? 5),
+      baseDelayMs: Number(process.env.RESOLVER_RPC_BASE_DELAY_MS ?? 1000),
+      maxDelayMs: Number(process.env.RESOLVER_RPC_MAX_DELAY_MS ?? 30000),
+      timeoutMs: Number(process.env.RESOLVER_RPC_TIMEOUT_MS ?? 10000),
+    },
     ethereum: {
       rpcUrl: resolveEthereumRpcUrl(isMainnet ? "mainnet" : "testnet"),
       chainId: isMainnet ? 1 : 11_155_111,

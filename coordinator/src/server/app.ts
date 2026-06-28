@@ -13,6 +13,9 @@ import type { OrderService } from "../services/order-service.js";
 import type { SecretService } from "../services/secret-service.js";
 import type { QuoteService } from "../services/quote-service.js";
 import type { ReconciliationStatus } from "../reconciliation/reconciler.js";
+import { requestIdMiddleware, REQUEST_ID_HEADER } from "./middleware/request-id.js";
+import { sanitizeForLog } from "../utils/sanitize-for-log.js";
+import { SecretRevealError } from "../services/secret-errors.js";
 
 export interface AppDeps {
   log: Logger;
@@ -26,7 +29,22 @@ export interface AppDeps {
 
 export function createApp(deps: AppDeps): Express {
   const app = express();
-  app.use(pinoHttp({ logger: deps.log }));
+  // Request-ID middleware runs first so the ID is available to every subsequent
+  // handler, including the pino-http logger which picks it up via the logger
+  // mixin bound to the AsyncLocalStorage store.
+  app.use(requestIdMiddleware);
+  app.use(
+    pinoHttp({
+      logger: deps.log,
+      // Echo the correlation ID into the pino-http access log record so the
+      // HTTP log line and downstream service log lines share the same field.
+      customProps(_req, res) {
+        const r = res as express.Response;
+        const id = r.locals["requestId"] as string | undefined;
+        return id ? { requestId: id } : {};
+      }
+    })
+  );
   app.use(express.json({ limit: "1mb" }));
   app.use(
     cors({
@@ -68,8 +86,11 @@ export function createApp(deps: AppDeps): Express {
       res: express.Response,
       _next: express.NextFunction
     ) => {
-      deps.log.error({ err }, "unhandled error");
-      res.status(500).json({ error: "internal_error", message: err.message });
+      const isSafe = err instanceof SecretRevealError;
+      const safeErr = isSafe ? err : sanitizeForLog(err);
+      
+      deps.log.error({ err: safeErr }, "unhandled error");
+      res.status(500).json({ error: "internal_error", message: safeErr.message });
     }
   );
 

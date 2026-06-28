@@ -55,6 +55,7 @@ export interface OrderRow {
   resolverAddress: string | null;
   createdAt: number;
   updatedAt: number;
+  archivedAt: number | null;
 }
 
 export interface OrderHistoryResult {
@@ -110,6 +111,7 @@ interface OrderDbRow {
   resolver_address: string | null;
   created_at: number;
   updated_at: number;
+  archived_at: number | null;
 }
 
 function rowToOrder(r: OrderDbRow): OrderRow {
@@ -141,7 +143,8 @@ function rowToOrder(r: OrderDbRow): OrderRow {
     secretRevealedTx: r.secret_revealed_tx,
     resolverAddress: r.resolver_address,
     createdAt: r.created_at,
-    updatedAt: r.updated_at
+    updatedAt: r.updated_at,
+    archivedAt: r.archived_at ?? null
   };
 }
 
@@ -486,6 +489,40 @@ export class OrdersRepository {
     await this.run(this.rollbackDst, { publicId });
   }
 
+  /**
+   * Find announced orders with no source lock that are older than the given
+   * retention window and have not yet been archived.  These are candidates for
+   * soft-delete by the stale cleanup service.
+   */
+  async findStaleAnnounced(retentionWindowSeconds: number): Promise<OrderRow[]> {
+    const cutoff = Math.floor(Date.now() / 1000) - retentionWindowSeconds;
+    const rows = await this.all<OrderDbRow>(
+      this.db.prepare(`
+        SELECT * FROM orders
+        WHERE status = 'announced'
+          AND src_order_id IS NULL
+          AND archived_at IS NULL
+          AND created_at < ?
+      `),
+      cutoff
+    );
+    return rows.map(rowToOrder);
+  }
+
+  /** Soft-delete a single order by stamping it with the current unix time. */
+  async archiveOrder(publicId: string): Promise<void> {
+    await this.run(
+      this.db.prepare(`
+        UPDATE orders
+        SET archived_at = CAST(strftime('%s','now') AS INTEGER),
+            updated_at  = CAST(strftime('%s','now') AS INTEGER)
+        WHERE public_id = ?
+          AND archived_at IS NULL
+      `),
+      publicId
+    );
+  }
+
   async getLastProcessedBlock(chain: Chain): Promise<number> {
     const srcRow = await this.get<{ max_block: number | null }>(
       this.db.prepare("SELECT MAX(src_lock_block) AS max_block FROM orders WHERE src_chain = ?"),
@@ -498,5 +535,57 @@ export class OrdersRepository {
     const srcMax = srcRow?.max_block ?? 0;
     const dstMax = dstRow?.max_block ?? 0;
     return Math.max(srcMax, dstMax);
+  }
+
+  /**
+   * Return orders in `src_locked` or `dst_locked` whose relevant timelock
+   * has already passed (timelock < nowSeconds).  These are candidates for
+   * the periodic expiry scan.
+   *
+   * Only non-terminal statuses are returned — completed, refunded, failed
+   * orders are excluded because they cannot transition to `expired`.
+   */
+  async findExpiredCandidates(nowSeconds: number): Promise<OrderRow[]> {
+    const rows = await this.all<OrderDbRow>(
+      this.db.prepare(`
+        SELECT * FROM orders
+        WHERE status IN ('src_locked', 'dst_locked')
+          AND (
+            (src_timelock IS NOT NULL AND src_timelock < :now)
+            OR
+            (dst_timelock IS NOT NULL AND dst_timelock < :now)
+          )
+      `),
+      { now: nowSeconds }
+    );
+    return rows.map(rowToOrder);
+  }
+
+  /**
+   * Return orders in `src_locked` or `dst_locked` state that have no preimage
+   * recorded.  These are candidates for secret recovery via on-chain log replay.
+   */
+  async findOrdersMissingSecret(): Promise<
+    { publicId: string; srcOrderId: string | null; hashlock: string; status: string }[]
+  > {
+    const rows = await this.all<{
+      public_id: string;
+      src_order_id: string | null;
+      hashlock: string;
+      status: string;
+    }>(
+      this.db.prepare(`
+        SELECT public_id, src_order_id, hashlock, status
+        FROM orders
+        WHERE status IN ('src_locked', 'dst_locked')
+          AND preimage IS NULL
+      `)
+    );
+    return rows.map((r) => ({
+      publicId: r.public_id,
+      srcOrderId: r.src_order_id,
+      hashlock: r.hashlock,
+      status: r.status,
+    }));
   }
 }

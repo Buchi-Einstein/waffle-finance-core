@@ -54,7 +54,10 @@ export class OrderService {
     }
 
     const order = await this.repo.announce(input as AnnounceOrderInput);
-    this.log.info({ publicId: order.publicId, direction: order.direction }, "order announced");
+    this.log.info(
+      { publicId: order.publicId, direction: order.direction, hashlock: order.hashlock },
+      "order announced"
+    );
     ordersTotal.inc({ status: "announced" });
     
     // Invalidate cache for both source and destination addresses
@@ -187,6 +190,40 @@ export class OrderService {
 
   async getLastProcessedBlock(chain: Chain): Promise<number> {
     return this.repo.getLastProcessedBlock(chain);
+  }
+
+  findOrdersMissingSecret(): Promise<
+    { publicId: string; srcOrderId: string | null; hashlock: string; status: string }[]
+  > {
+    return this.repo.findOrdersMissingSecret();
+  }
+
+  /**
+   * Scan for orders whose timelock has passed and mark them `expired`.
+   *
+   * `expired` is a soft, non-terminal state: the order can still be
+   * refunded or fail afterwards.  The scan deliberately skips terminal
+   * orders (completed / refunded / failed) — see `findExpiredCandidates`.
+   *
+   * Returns the number of orders that were successfully transitioned.
+   */
+  async expireStaleOrders(nowSeconds?: number): Promise<number> {
+    const now = nowSeconds ?? Math.floor(Date.now() / 1000);
+    const candidates = await this.repo.findExpiredCandidates(now);
+    let count = 0;
+    for (const order of candidates) {
+      try {
+        await this.markStatus(order.publicId, "expired");
+        this.log.info({ publicId: order.publicId }, "order marked expired by timelock");
+        count++;
+      } catch (err: any) {
+        this.log.warn(
+          { publicId: order.publicId, err: err?.message },
+          "cannot expire order — skipping"
+        );
+      }
+    }
+    return count;
   }
 
   /**

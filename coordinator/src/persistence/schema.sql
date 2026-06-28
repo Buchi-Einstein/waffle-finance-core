@@ -53,7 +53,8 @@ CREATE TABLE IF NOT EXISTS orders (
     resolver_address      TEXT,
 
     created_at            INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
-    updated_at            INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+    updated_at            INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
+    archived_at           INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_orders_hashlock         ON orders (hashlock);
@@ -81,5 +82,17 @@ CREATE TABLE IF NOT EXISTS resolver_heartbeats (
     address     TEXT PRIMARY KEY,
     chain       TEXT NOT NULL CHECK (chain IN ('ethereum', 'stellar')),
     last_seen   INTEGER NOT NULL
+);
+
+-- Schema migration history.
+-- Each row records one logical migration that has been applied to this database.
+-- For SQLite the coordinator applies all migrations atomically via schema.sql;
+-- rows are seeded at first open with duration_ms = 0.  Subsequent opens are
+-- idempotent (INSERT OR IGNORE).  Querying this table via queryMigrations()
+-- lets operators confirm which migrations are present.
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    migration   TEXT    PRIMARY KEY,
+    applied_at  INTEGER NOT NULL,
+    duration_ms INTEGER NOT NULL
 );
 

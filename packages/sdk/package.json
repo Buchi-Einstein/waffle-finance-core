@@ -1,10 +1,11 @@
 {
   "name": "@wafflefinance/sdk",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "TypeScript SDK for the WaffleFinance cross-chain bridge: Ethereum + Soroban HTLC clients, secret utilities, and a shared order state machine.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "sideEffects": false,
   "exports": {
     ".": {
       "import": "./dist/index.js",
@@ -37,10 +38,31 @@
     "./types": {
       "import": "./dist/types/index.js",
       "types": "./dist/types/index.d.ts"
+    },
+    "./htlc-client": {
+      "import": "./dist/htlc-client.js",
+      "types": "./dist/htlc-client.d.ts"
+    },
+    "./ethereum/adapter": {
+      "import": "./dist/ethereum/adapter.js",
+      "types": "./dist/ethereum/adapter.d.ts"
+    },
+    "./soroban/adapter": {
+      "import": "./dist/soroban/adapter.js",
+      "types": "./dist/soroban/adapter.d.ts"
+    },
+    "./solana/adapter": {
+      "import": "./dist/solana/adapter.js",
+      "types": "./dist/solana/adapter.d.ts"
     }
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
+    "build:analyze": "tsc && npm run analyze",
+    "analyze": "node scripts/analyze-bundle.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src --ext .ts",
